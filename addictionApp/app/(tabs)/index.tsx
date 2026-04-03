@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   Animated,
   Dimensions,
@@ -9,219 +10,180 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import Slider from "@react-native-community/slider";
 
 const { width } = Dimensions.get("window");
 
-const API_URL = "http://192.168.1.41:5000/predict";
+const API_URL = "http://10.23.220.26:5000/predict";
+const STORAGE_KEY = "mindwatch_history";
 
-// Sample feature data representing 3 timesteps of usage
-const SAMPLE_FEATURES = [
-  [120, 60, 30, 80, 20, 5],
-  [130, 70, 20, 90, 25, 6],
-  [150, 80, 40, 100, 30, 7],
+// Feature definitions: label, unit, min, max, index in feature array
+const FEATURES = [
+  { label: "Screen time",   unit: "mins", min: 0,  max: 600, index: 0 },
+  { label: "Social media",  unit: "mins", min: 0,  max: 300, index: 1 },
+  { label: "Gaming",        unit: "mins", min: 0,  max: 200, index: 2 },
+  { label: "Phone unlocks", unit: "",     min: 0,  max: 150, index: 3 },
+  { label: "Night usage",   unit: "mins", min: 0,  max: 180, index: 4 },
+  { label: "Avg session",   unit: "mins", min: 1,  max: 20,  index: 5 },
 ];
 
+const DEFAULT_VALUES = [120, 60, 30, 80, 20, 5];
+
 const RISK_CONFIG = {
-  0: {
-    label: "Low Risk",
-    shortLabel: "Low",
+  Mild: {
     color: "#1DB86A",
     dimColor: "#0e5a33",
     bgColor: "#071a10",
-    meterWidth: "18%",
+    meterWidth: 0.18,
     tip: "Great job! Your usage looks healthy.",
   },
-  1: {
-    label: "Medium Risk",
-    shortLabel: "Medium",
+  Moderate: {
     color: "#F0A020",
     dimColor: "#7a5010",
     bgColor: "#1c1200",
-    meterWidth: "58%",
+    meterWidth: 0.58,
     tip: "Try reducing social media time before bed.",
   },
-  2: {
-    label: "High Risk",
-    shortLabel: "High",
+  Severe: {
     color: "#E04A4A",
     dimColor: "#7a2424",
     bgColor: "#1c0808",
-    meterWidth: "90%",
+    meterWidth: 0.9,
     tip: "Consider a digital detox. Set app limits.",
   },
 };
 
-type RiskLevel = 0 | 1 | 2;
+type RiskLabel = "Mild" | "Moderate" | "Severe";
 
-interface StatCardProps {
-  icon: string;
-  value: string;
+// ─── Slider Row ───────────────────────────────────────────────────────────────
+function SliderRow({
+  label,
+  unit,
+  min,
+  max,
+  value,
+  onChange,
+}: {
   label: string;
-  barWidth: string;
-  barColor: string;
-}
-
-function StatCard({ icon, value, label, barWidth, barColor }: StatCardProps) {
-  const barAnim = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    Animated.timing(barAnim, {
-      toValue: 1,
-      duration: 900,
-      useNativeDriver: false,
-    }).start();
-  }, [value]);
-
-  const animatedWidth = barAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: ["0%", barWidth],
-  });
-
+  unit: string;
+  min: number;
+  max: number;
+  value: number;
+  onChange: (v: number) => void;
+}) {
   return (
-    <View style={styles.statCard}>
-      <Text style={styles.statIcon}>{icon}</Text>
-      <Text style={styles.statValue}>{value}</Text>
-      <Text style={styles.statLabel}>{label}</Text>
-      <View style={styles.statTrack}>
-        <Animated.View
-          style={[
-            styles.statFill,
-            { width: animatedWidth, backgroundColor: barColor },
-          ]}
-        />
+    <View style={styles.sliderRow}>
+      <View style={styles.sliderMeta}>
+        <Text style={styles.sliderLabel}>{label}</Text>
+        <Text style={styles.sliderVal}>
+          {Math.round(value)}
+          {unit ? ` ${unit}` : ""}
+        </Text>
       </View>
+      <Slider
+        style={{ width: "100%", height: 32 }}
+        minimumValue={min}
+        maximumValue={max}
+        step={1}
+        value={value}
+        onValueChange={onChange}
+        minimumTrackTintColor="#5050a0"
+        maximumTrackTintColor="#1a1a2a"
+        thumbTintColor="#8080d0"
+      />
     </View>
   );
 }
 
-interface AppBarProps {
-  name: string;
-  time: string;
-  pct: number;
-  color: string;
-}
-
-function AppBar({ name, time, pct, color }: AppBarProps) {
-  const barAnim = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    Animated.timing(barAnim, {
-      toValue: pct / 100,
-      duration: 1000,
-      useNativeDriver: false,
-    }).start();
-  }, [pct]);
-
-  const animatedWidth = barAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: ["0%", `${pct}%`],
-  });
-
+// ─── Day History Pill ─────────────────────────────────────────────────────────
+function DayPill({ day, filled }: { day: number; filled: boolean }) {
   return (
-    <View style={styles.appBarRow}>
-      <View style={[styles.appDot, { backgroundColor: color }]} />
-      <View style={styles.appBarInfo}>
-        <Text style={styles.appBarName}>{name}</Text>
-        <View style={styles.appBarTrack}>
-          <Animated.View
-            style={[
-              styles.appBarFill,
-              { width: animatedWidth, backgroundColor: color },
-            ]}
-          />
-        </View>
-      </View>
-      <Text style={styles.appBarTime}>{time}</Text>
+    <View style={[styles.dayPill, filled && styles.dayPillFilled]}>
+      <Text style={[styles.dayPillText, filled && styles.dayPillTextFilled]}>
+        Day {day}
+      </Text>
     </View>
   );
 }
 
+// ─── Main Screen ──────────────────────────────────────────────────────────────
 export default function HomeScreen() {
-  const [risk, setRisk] = useState<RiskLevel>(1);
-  const [confidence, setConfidence] = useState(68);
+  const [values, setValues] = useState<number[]>([...DEFAULT_VALUES]);
+  const [history, setHistory] = useState<number[][]>([]);
+  const [risk, setRisk] = useState<RiskLabel | null>(null);
+  const [confidence, setConfidence] = useState(0);
+  const [probabilities, setProbabilities] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState(0);
-  const [hasResult, setHasResult] = useState(false);
+  const [activeTab, setActiveTab] = useState<"log" | "result">("log");
 
-  const meterAnim = useRef(new Animated.Value(0.58)).current;
+  const meterAnim = useRef(new Animated.Value(0)).current;
   const fadeAnim = useRef(new Animated.Value(1)).current;
   const scaleAnim = useRef(new Animated.Value(1)).current;
-  const glowAnim = useRef(new Animated.Value(0)).current;
 
+  // Load saved history on mount
   useEffect(() => {
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(glowAnim, {
-          toValue: 1,
-          duration: 2000,
-          useNativeDriver: true,
-        }),
-        Animated.timing(glowAnim, {
-          toValue: 0,
-          duration: 2000,
-          useNativeDriver: true,
-        }),
-      ]),
-    ).start();
+    AsyncStorage.getItem(STORAGE_KEY).then((raw) => {
+      if (raw) {
+        const parsed: number[][] = JSON.parse(raw);
+        setHistory(parsed);
+      }
+    });
   }, []);
 
-  const config = RISK_CONFIG[risk];
+  const config = risk ? RISK_CONFIG[risk] : null;
+  const daysLogged = history.length;
+  const canAnalyze = daysLogged >= 3;
 
-  const animateToRisk = (newRisk: RiskLevel, newConf: number) => {
-    const targetMeter = newRisk === 0 ? 0.18 : newRisk === 1 ? 0.58 : 0.9;
+  // ── Log today's data ────────────────────────────────────────────────────────
+  const logToday = async () => {
+    if (daysLogged >= 3) {
+      // Already have 3 days — clear and start fresh
+      await AsyncStorage.removeItem(STORAGE_KEY);
+      setHistory([]);
+      return;
+    }
+    const newHistory = [...history, values];
+    setHistory(newHistory);
+    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(newHistory));
 
-    Animated.parallel([
-      Animated.timing(fadeAnim, {
-        toValue: 0,
-        duration: 200,
-        useNativeDriver: true,
-      }),
-      Animated.spring(scaleAnim, { toValue: 0.95, useNativeDriver: true }),
-    ]).start(() => {
-      setRisk(newRisk);
-      setConfidence(newConf);
-      Animated.parallel([
-        Animated.timing(meterAnim, {
-          toValue: targetMeter,
-          duration: 800,
-          useNativeDriver: false,
-        }),
-        Animated.timing(fadeAnim, {
-          toValue: 1,
-          duration: 300,
-          useNativeDriver: true,
-        }),
-        Animated.spring(scaleAnim, {
-          toValue: 1,
-          friction: 5,
-          useNativeDriver: true,
-        }),
-      ]).start();
-    });
+    // Reset sliders for next day's entry
+    setValues([...DEFAULT_VALUES]);
   };
 
+  // ── Predict ─────────────────────────────────────────────────────────────────
   const predict = async () => {
+    if (!canAnalyze) return;
     setLoading(true);
     try {
       const res = await fetch(API_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ features: SAMPLE_FEATURES }),
+        body: JSON.stringify({ features: history }),
       });
       const data = await res.json();
-      console.log("RESPONSE:", JSON.stringify(data));
 
-      const riskMap: Record<string, RiskLevel> = {
-        Mild: 0,
-        Moderate: 1,
-        Severe: 2,
-      };
-      const riskLevel = riskMap[data.risk] ?? 1;
-      animateToRisk(riskLevel, Math.round(data.confidence));
-      setHasResult(true);
+      const riskLabel = data.risk as RiskLabel;
+      const conf: number = data.confidence;
+      const probs: Record<string, number> = data.probabilities ?? {};
+
+      // Animate meter
+      const targetMeter = RISK_CONFIG[riskLabel]?.meterWidth ?? 0.5;
+      Animated.parallel([
+        Animated.timing(fadeAnim, { toValue: 0, duration: 200, useNativeDriver: true }),
+        Animated.spring(scaleAnim, { toValue: 0.95, useNativeDriver: true }),
+      ]).start(() => {
+        setRisk(riskLabel);
+        setConfidence(conf);
+        setProbabilities(probs);
+        setActiveTab("result");
+        Animated.parallel([
+          Animated.timing(meterAnim, { toValue: targetMeter, duration: 900, useNativeDriver: false }),
+          Animated.timing(fadeAnim, { toValue: 1, duration: 300, useNativeDriver: true }),
+          Animated.spring(scaleAnim, { toValue: 1, friction: 5, useNativeDriver: true }),
+        ]).start();
+      });
     } catch (err) {
       console.log("API ERROR:", err);
-      // do nothing, keep current result
     } finally {
       setLoading(false);
     }
@@ -232,438 +194,296 @@ export default function HomeScreen() {
     outputRange: ["0%", "100%"],
   });
 
-  const glowOpacity = glowAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.3, 0.7],
-  });
-
-  const tabs = ["Today", "Week", "Month"];
-
-  const statsData = [
-    {
-      icon: "⏱",
-      value: risk === 0 ? "2h 05m" : risk === 1 ? "4h 12m" : "7h 48m",
-      label: "Screen time",
-      barWidth: risk === 0 ? "28%" : risk === 1 ? "70%" : "95%",
-      barColor: config.color,
-    },
-    {
-      icon: "📲",
-      value: risk === 0 ? "34" : risk === 1 ? "87" : "134",
-      label: "Unlocks",
-      barWidth: risk === 0 ? "22%" : risk === 1 ? "58%" : "89%",
-      barColor: "#8080d0",
-    },
-    {
-      icon: "🌙",
-      value: risk === 0 ? "8m" : risk === 1 ? "42m" : "95m",
-      label: "Night usage",
-      barWidth: risk === 0 ? "8%" : risk === 1 ? "42%" : "95%",
-      barColor: "#5050a0",
-    },
-    {
-      icon: "🎯",
-      value: risk === 0 ? "4m" : risk === 1 ? "7m" : "12m",
-      label: "Avg session",
-      barWidth: risk === 0 ? "20%" : risk === 1 ? "35%" : "60%",
-      barColor: "#1DB86A",
-    },
-  ];
+  const updateValue = (index: number, v: number) => {
+    setValues((prev) => {
+      const next = [...prev];
+      next[index] = v;
+      return next;
+    });
+  };
 
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="#0a0a12" />
-      <ScrollView
-        contentContainerStyle={styles.scroll}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* Header */}
-        <View style={styles.header}>
-          <Text style={styles.appName}>MindWatch</Text>
-          <View style={styles.headerBadge}>
-            <Text style={styles.headerBadgeText}>LSTM v1</Text>
-          </View>
+
+      {/* Header */}
+      <View style={styles.header}>
+        <Text style={styles.appName}>MindWatch</Text>
+        <View style={styles.headerBadge}>
+          <Text style={styles.headerBadgeText}>LSTM v2</Text>
         </View>
+      </View>
 
-        {/* Hero Risk Card */}
-        {!hasResult ? (
-          <View style={styles.heroCard}>
-            <Text
-              style={{
-                color: "#404060",
-                textAlign: "center",
-                marginVertical: 40,
-                fontSize: 13,
-              }}
-            >
-              Tap Analyze Now to check your addiction risk
-            </Text>
-          </View>
-        ) : (
-          <Animated.View
-            style={[
-              styles.heroCard,
-              {
-                borderColor: config.dimColor,
-                transform: [{ scale: scaleAnim }],
-              },
-            ]}
+      {/* Tab switcher */}
+      <View style={styles.tabRow}>
+        {(["log", "result"] as const).map((t) => (
+          <TouchableOpacity
+            key={t}
+            style={[styles.tab, activeTab === t && styles.tabActive]}
+            onPress={() => setActiveTab(t)}
           >
-            <Animated.View
-              style={[
-                styles.heroGlow,
-                { backgroundColor: config.color, opacity: glowOpacity },
-              ]}
-            />
-            <Text style={styles.heroLabel}>Current Risk Level</Text>
-            <Animated.View style={{ opacity: fadeAnim }}>
-              <Text style={[styles.riskText, { color: config.color }]}>
-                {config.shortLabel}
-              </Text>
-              <Text style={styles.confidenceText}>
-                {confidence}% confidence · updated just now
-              </Text>
-            </Animated.View>
-            <View style={styles.meterTrack}>
-              <Animated.View
-                style={[
-                  styles.meterFill,
-                  { width: meterPercent, backgroundColor: config.color },
-                ]}
-              />
-            </View>
-            <View style={styles.meterLabels}>
-              <Text style={styles.meterLabel}>Low</Text>
-              <Text style={styles.meterLabel}>Medium</Text>
-              <Text style={styles.meterLabel}>High</Text>
-            </View>
-            <View
-              style={[
-                styles.tipBox,
-                {
-                  borderColor: config.dimColor,
-                  backgroundColor: config.bgColor,
-                },
-              ]}
-            >
-              <Text style={[styles.tipText, { color: config.color }]}>
-                {config.tip}
-              </Text>
-            </View>
-          </Animated.View>
-        )}
+            <Text style={[styles.tabText, activeTab === t && styles.tabTextActive]}>
+              {t === "log" ? "Log Usage" : "My Risk"}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
 
-        {/* Tabs */}
-        <View style={styles.tabRow}>
-          {tabs.map((t, i) => (
+      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+
+        {/* ── LOG TAB ── */}
+        {activeTab === "log" && (
+          <>
+            {/* Day progress pills */}
+            <View style={styles.pillRow}>
+              {[1, 2, 3].map((d) => (
+                <DayPill key={d} day={d} filled={d <= daysLogged} />
+              ))}
+            </View>
+
+            <Text style={styles.subHint}>
+              {daysLogged < 3
+                ? `Log ${3 - daysLogged} more day${3 - daysLogged > 1 ? "s" : ""} to unlock prediction`
+                : "3 days logged — ready to analyze!"}
+            </Text>
+
+            {/* Sliders */}
+            <View style={styles.sliderCard}>
+              <Text style={styles.sectionTitle}>Today's Usage</Text>
+              {FEATURES.map((f) => (
+                <SliderRow
+                  key={f.label}
+                  label={f.label}
+                  unit={f.unit}
+                  min={f.min}
+                  max={f.max}
+                  value={values[f.index]}
+                  onChange={(v) => updateValue(f.index, v)}
+                />
+              ))}
+            </View>
+
+            {/* Log button */}
             <TouchableOpacity
-              key={t}
-              style={[styles.tab, activeTab === i && styles.tabActive]}
-              onPress={() => setActiveTab(i)}
+              style={[styles.actionBtn, daysLogged >= 3 && styles.resetBtn]}
+              onPress={logToday}
+              activeOpacity={0.8}
             >
-              <Text
-                style={[
-                  styles.tabText,
-                  activeTab === i && styles.tabTextActive,
-                ]}
-              >
-                {t}
+              <Text style={styles.actionBtnText}>
+                {daysLogged >= 3 ? "Reset & Start Over" : `Log Day ${daysLogged + 1}`}
               </Text>
             </TouchableOpacity>
-          ))}
-        </View>
 
-        {/* Stats Grid */}
-        <Text style={styles.sectionTitle}>Usage Snapshot</Text>
-        <View style={styles.statsGrid}>
-          {statsData.map((s) => (
-            <StatCard key={s.label} {...s} />
-          ))}
-        </View>
+            {/* Analyze button — only when 3 days done */}
+            {canAnalyze && (
+              <TouchableOpacity
+                style={[styles.analyzeBtn, loading && styles.analyzeBtnLoading]}
+                onPress={predict}
+                disabled={loading}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.analyzeBtnText}>
+                  {loading ? "Analyzing..." : "Analyze Now"}
+                </Text>
+              </TouchableOpacity>
+            )}
+          </>
+        )}
 
-        {/* App Breakdown */}
-        <Text style={styles.sectionTitle}>App Breakdown</Text>
-        <View style={styles.breakdownCard}>
-          <AppBar
-            name="Social Media"
-            time={risk === 0 ? "18m" : risk === 1 ? "72m" : "148m"}
-            pct={risk === 0 ? 18 : risk === 1 ? 72 : 98}
-            color="#E04A4A"
-          />
-          <AppBar
-            name="Gaming"
-            time={risk === 0 ? "10m" : risk === 1 ? "48m" : "92m"}
-            pct={risk === 0 ? 10 : risk === 1 ? 48 : 92}
-            color="#8080d0"
-          />
-          <AppBar
-            name="Productivity"
-            time={risk === 0 ? "55m" : risk === 1 ? "30m" : "12m"}
-            pct={risk === 0 ? 55 : risk === 1 ? 30 : 12}
-            color="#1DB86A"
-          />
-          <AppBar
-            name="Other"
-            time={risk === 0 ? "15m" : risk === 1 ? "22m" : "38m"}
-            pct={risk === 0 ? 15 : risk === 1 ? 22 : 38}
-            color="#404060"
-          />
-        </View>
+        {/* ── RESULT TAB ── */}
+        {activeTab === "result" && (
+          <>
+            {risk === null ? (
+              <View style={styles.emptyState}>
+                <Text style={styles.emptyText}>
+                  Log 3 days of usage and tap Analyze Now to see your risk.
+                </Text>
+              </View>
+            ) : (
+              <Animated.View
+                style={[
+                  styles.heroCard,
+                  { borderColor: config!.dimColor, transform: [{ scale: scaleAnim }] },
+                ]}
+              >
+                <Text style={styles.heroLabel}>Current Risk Level</Text>
+                <Animated.View style={{ opacity: fadeAnim }}>
+                  <Text style={[styles.riskText, { color: config!.color }]}>{risk}</Text>
+                  <Text style={styles.confidenceText}>
+                    {confidence}% confidence · {daysLogged} days analyzed
+                  </Text>
+                </Animated.View>
 
-        {/* Analyze Button */}
-        <TouchableOpacity
-          style={[styles.analyzeBtn, loading && styles.analyzeBtnLoading]}
-          onPress={predict}
-          disabled={loading}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.analyzeBtnText}>
-            {loading ? "Analyzing..." : "Analyze Now"}
-          </Text>
-        </TouchableOpacity>
+                {/* Meter */}
+                <View style={styles.meterTrack}>
+                  <Animated.View
+                    style={[styles.meterFill, { width: meterPercent, backgroundColor: config!.color }]}
+                  />
+                </View>
+                <View style={styles.meterLabels}>
+                  <Text style={styles.meterLabel}>Mild</Text>
+                  <Text style={styles.meterLabel}>Moderate</Text>
+                  <Text style={styles.meterLabel}>Severe</Text>
+                </View>
 
-        <View style={{ height: 32 }} />
+                {/* Tip */}
+                <View style={[styles.tipBox, { borderColor: config!.dimColor, backgroundColor: config!.bgColor }]}>
+                  <Text style={[styles.tipText, { color: config!.color }]}>{config!.tip}</Text>
+                </View>
+
+                {/* Probability breakdown */}
+                {Object.keys(probabilities).length > 0 && (
+                  <View style={styles.probSection}>
+                    <Text style={styles.sectionTitle}>Probability Breakdown</Text>
+                    {(["Mild", "Moderate", "Severe"] as RiskLabel[]).map((r) => (
+                      <View key={r} style={styles.probRow}>
+                        <Text style={styles.probLabel}>{r}</Text>
+                        <View style={styles.probTrack}>
+                          <View
+                            style={[
+                              styles.probFill,
+                              {
+                                width: `${probabilities[r] ?? 0}%`,
+                                backgroundColor: RISK_CONFIG[r].color,
+                              },
+                            ]}
+                          />
+                        </View>
+                        <Text style={[styles.probVal, { color: RISK_CONFIG[r].color }]}>
+                          {(probabilities[r] ?? 0).toFixed(1)}%
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
+              </Animated.View>
+            )}
+
+            {canAnalyze && (
+              <TouchableOpacity
+                style={[styles.analyzeBtn, loading && styles.analyzeBtnLoading]}
+                onPress={predict}
+                disabled={loading}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.analyzeBtnText}>
+                  {loading ? "Analyzing..." : "Re-Analyze"}
+                </Text>
+              </TouchableOpacity>
+            )}
+          </>
+        )}
+
+        <View style={{ height: 40 }} />
       </ScrollView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#0a0a12",
-  },
-  scroll: {
-    paddingHorizontal: 20,
-    paddingTop: 56,
-  },
+  container: { flex: 1, backgroundColor: "#0a0a12" },
+  scroll: { paddingHorizontal: 20, paddingBottom: 20 },
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 20,
+    paddingHorizontal: 20,
+    paddingTop: 56,
+    paddingBottom: 12,
   },
   appName: {
-    fontSize: 13,
-    color: "#5a5a7a",
-    letterSpacing: 3,
-    textTransform: "uppercase",
-    fontWeight: "500",
+    fontSize: 13, color: "#ffffff", letterSpacing: 3,
+    textTransform: "uppercase", fontWeight: "500",
   },
   headerBadge: {
-    backgroundColor: "#1a1a2e",
-    borderWidth: 0.5,
-    borderColor: "#2a2a4a",
-    borderRadius: 12,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+    backgroundColor: "#1a1a2e", borderWidth: 0.5,
+    borderColor: "#2a2a4a", borderRadius: 12,
+    paddingHorizontal: 10, paddingVertical: 4,
   },
-  headerBadgeText: {
-    fontSize: 11,
-    color: "#6060a0",
-    fontFamily: "monospace",
-  },
-  heroCard: {
-    backgroundColor: "#0f0f1e",
-    borderRadius: 24,
-    borderWidth: 1,
-    padding: 20,
-    marginBottom: 20,
-    overflow: "hidden",
-    position: "relative",
-  },
-  heroGlow: {
-    position: "absolute",
-    top: -40,
-    right: -40,
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-  },
-  heroLabel: {
-    fontSize: 10,
-    color: "#404060",
-    letterSpacing: 2,
-    textTransform: "uppercase",
-    marginBottom: 8,
-  },
-  riskText: {
-    fontSize: 42,
-    fontWeight: "700",
-    letterSpacing: -1,
-    marginBottom: 4,
-  },
-  confidenceText: {
-    fontSize: 12,
-    color: "#404060",
-    fontFamily: "monospace",
-    marginBottom: 16,
-    paddingBottom: 16,
-    borderBottomWidth: 0.5,
-    borderBottomColor: "#1a1a2a",
-  },
-  meterTrack: {
-    height: 4,
-    backgroundColor: "#181828",
-    borderRadius: 4,
-    overflow: "hidden",
-    marginBottom: 6,
-  },
-  meterFill: {
-    height: "100%",
-    borderRadius: 4,
-  },
-  meterLabels: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginBottom: 16,
-  },
-  meterLabel: {
-    fontSize: 9,
-    color: "#353550",
-    letterSpacing: 1,
-    textTransform: "uppercase",
-  },
-  tipBox: {
-    borderWidth: 0.5,
-    borderRadius: 12,
-    padding: 10,
-  },
-  tipText: {
-    fontSize: 12,
-    fontWeight: "500",
-  },
+  headerBadgeText: { fontSize: 11, color: "#8080d0", fontFamily: "monospace" },
   tabRow: {
-    flexDirection: "row",
-    gap: 8,
-    marginBottom: 20,
+    flexDirection: "row", gap: 8,
+    paddingHorizontal: 20, marginBottom: 16,
   },
   tab: {
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderRadius: 20,
-    borderWidth: 0.5,
-    borderColor: "transparent",
+    paddingHorizontal: 16, paddingVertical: 8,
+    borderRadius: 20, borderWidth: 0.5, borderColor: "transparent",
   },
-  tabActive: {
-    backgroundColor: "#1a1a3a",
-    borderColor: "#3a3a6a",
+  tabActive: { backgroundColor: "#1a1a3a", borderColor: "#3a3a6a" },
+  tabText: { fontSize: 13, color: "#505070" },
+  tabTextActive: { color: "#8080d0", fontWeight: "500" },
+  pillRow: { flexDirection: "row", gap: 8, marginBottom: 8 },
+  dayPill: {
+    paddingHorizontal: 14, paddingVertical: 6,
+    borderRadius: 20, borderWidth: 0.5, borderColor: "#2a2a3a",
   },
-  tabText: {
-    fontSize: 12,
-    color: "#404060",
-  },
-  tabTextActive: {
-    color: "#8080d0",
-    fontWeight: "500",
+  dayPillFilled: { backgroundColor: "#1a1a3a", borderColor: "#5050a0" },
+  dayPillText: { fontSize: 12, color: "#404060" },
+  dayPillTextFilled: { color: "#8080d0", fontWeight: "500" },
+  subHint: { fontSize: 12, color: "#505070", marginBottom: 16 },
+  sliderCard: {
+    backgroundColor: "#0f0f1c", borderWidth: 0.5,
+    borderColor: "#1e1e2e", borderRadius: 20,
+    padding: 16, marginBottom: 16,
   },
   sectionTitle: {
-    fontSize: 10,
-    color: "#404060",
-    letterSpacing: 2,
-    textTransform: "uppercase",
-    marginBottom: 12,
+    fontSize: 10, color: "#505070", letterSpacing: 2,
+    textTransform: "uppercase", marginBottom: 14,
   },
-  statsGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
-    marginBottom: 24,
+  sliderRow: { marginBottom: 14 },
+  sliderMeta: {
+    flexDirection: "row", justifyContent: "space-between",
+    alignItems: "center", marginBottom: 2,
   },
-  statCard: {
-    width: (width - 50) / 2,
-    backgroundColor: "#0f0f1c",
-    borderWidth: 0.5,
-    borderColor: "#1e1e2e",
-    borderRadius: 16,
-    padding: 14,
+  sliderLabel: { fontSize: 13, color: "#a0a0c0" },
+  sliderVal: { fontSize: 13, color: "#ffffff", fontFamily: "monospace", fontWeight: "500" },
+  actionBtn: {
+    backgroundColor: "#1a1a3a", borderWidth: 0.5,
+    borderColor: "#3a3a6a", borderRadius: 18,
+    padding: 14, alignItems: "center", marginBottom: 10,
   },
-  statIcon: {
-    fontSize: 16,
-    marginBottom: 6,
-  },
-  statValue: {
-    fontSize: 18,
-    fontWeight: "600",
-    color: "#c0c0e0",
-    fontFamily: "monospace",
-    marginBottom: 2,
-  },
-  statLabel: {
-    fontSize: 11,
-    color: "#404060",
-    marginBottom: 8,
-  },
-  statTrack: {
-    height: 2,
-    backgroundColor: "#1a1a2a",
-    borderRadius: 2,
-    overflow: "hidden",
-  },
-  statFill: {
-    height: "100%",
-    borderRadius: 2,
-  },
-  breakdownCard: {
-    backgroundColor: "#0f0f1c",
-    borderWidth: 0.5,
-    borderColor: "#1e1e2e",
-    borderRadius: 20,
-    padding: 16,
-    gap: 14,
-    marginBottom: 24,
-  },
-  appBarRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
-  appDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-  },
-  appBarInfo: {
-    flex: 1,
-  },
-  appBarName: {
-    fontSize: 12,
-    color: "#a0a0c0",
-    marginBottom: 4,
-  },
-  appBarTrack: {
-    height: 3,
-    backgroundColor: "#181828",
-    borderRadius: 3,
-    overflow: "hidden",
-  },
-  appBarFill: {
-    height: "100%",
-    borderRadius: 3,
-  },
-  appBarTime: {
-    fontSize: 11,
-    color: "#505070",
-    fontFamily: "monospace",
-    width: 36,
-    textAlign: "right",
-  },
+  resetBtn: { borderColor: "#4a2a2a", backgroundColor: "#1c1010" },
+  actionBtnText: { fontSize: 14, fontWeight: "600", color: "#8080d0" },
   analyzeBtn: {
-    backgroundColor: "#1a1a3a",
-    borderWidth: 0.5,
-    borderColor: "#3a3a6a",
-    borderRadius: 18,
-    padding: 16,
-    alignItems: "center",
+    backgroundColor: "#5050a0", borderRadius: 18,
+    padding: 16, alignItems: "center", marginBottom: 10,
   },
-  analyzeBtnLoading: {
-    borderColor: "#2a2a4a",
-    backgroundColor: "#141428",
+  analyzeBtnLoading: { backgroundColor: "#2a2a5a" },
+  analyzeBtnText: { fontSize: 15, fontWeight: "600", color: "#ffffff", letterSpacing: 0.5 },
+  emptyState: { paddingVertical: 60, alignItems: "center" },
+  emptyText: { fontSize: 13, color: "#404060", textAlign: "center", lineHeight: 22 },
+  heroCard: {
+    backgroundColor: "#0f0f1e", borderRadius: 24,
+    borderWidth: 1, padding: 20, marginBottom: 16, overflow: "hidden",
   },
-  analyzeBtnText: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: "#8080d0",
-    letterSpacing: 0.5,
+  heroLabel: {
+    fontSize: 10, color: "#505070", letterSpacing: 2,
+    textTransform: "uppercase", marginBottom: 8,
   },
+  riskText: { fontSize: 42, fontWeight: "700", letterSpacing: -1, marginBottom: 4 },
+  confidenceText: {
+    fontSize: 12, color: "#606080", fontFamily: "monospace",
+    marginBottom: 16, paddingBottom: 16,
+    borderBottomWidth: 0.5, borderBottomColor: "#1a1a2a",
+  },
+  meterTrack: {
+    height: 4, backgroundColor: "#181828",
+    borderRadius: 4, overflow: "hidden", marginBottom: 6,
+  },
+  meterFill: { height: "100%", borderRadius: 4 },
+  meterLabels: {
+    flexDirection: "row", justifyContent: "space-between", marginBottom: 16,
+  },
+  meterLabel: { fontSize: 9, color: "#404060", letterSpacing: 1, textTransform: "uppercase" },
+  tipBox: { borderWidth: 0.5, borderRadius: 12, padding: 10, marginBottom: 16 },
+  tipText: { fontSize: 12, fontWeight: "500" },
+  probSection: { marginTop: 4 },
+  probRow: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 10 },
+  probLabel: { fontSize: 12, color: "#a0a0c0", width: 70 },
+  probTrack: {
+    flex: 1, height: 3, backgroundColor: "#181828",
+    borderRadius: 3, overflow: "hidden",
+  },
+  probFill: { height: "100%", borderRadius: 3 },
+  probVal: { fontSize: 12, fontFamily: "monospace", width: 44, textAlign: "right" },
 });
